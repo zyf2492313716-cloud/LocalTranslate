@@ -149,13 +149,13 @@ Sources/LocalTranslate/
 ├── DictionaryService.swift    # 词典查询链路
 ├── PluginRuntime.swift        # Bob 插件运行时（JSContext + $http/$data/$file…）
 ├── HelperServer.swift         # 浏览器助手的本地 HTTP 服务
-└── SelfTest.swift             # 81 项自检
+└── SelfTest.swift             # 82 项自检
 ```
 
 ## 开发
 
 ```bash
-./scripts/verify.sh        # 全套自检：81 项，退出码 0 才算过
+./scripts/verify.sh        # 全套自检：82 项，退出码 0 才算过
 ```
 
 自检覆盖单元测试、真实网络请求、OCR、插件运行时、界面渲染、真实按键等。失败的项会打印原因，不是"看起来过了"。
