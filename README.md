@@ -138,6 +138,8 @@ open -a /Applications/LocalTranslate.app
 
 ## 代码结构
 
+更细的模块说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
 ```
 Sources/LocalTranslate/
 ├── AppDelegate.swift          # 菜单栏、全局快捷键、各入口的调度
