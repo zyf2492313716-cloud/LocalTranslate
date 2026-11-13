@@ -330,6 +330,16 @@ else
     bad "免密钥词典链路不通"
 fi
 
+# 六个主要界面都能离屏渲染出图（顺便兜住"OCR 文字区宽度为 0"这类布局 bug）
+SHOTS=$(mktemp -d)
+if "$BIN" --selftest screenshots "$SHOTS" 2>&1 | grep -q "RESULT: PASS" \
+   && [ "$(ls "$SHOTS"/*.png 2>/dev/null | wc -l | tr -d ' ')" = "6" ]; then
+    ok "六个主要界面离屏渲染出图"
+else
+    bad "界面离屏渲染不完整"
+fi
+rm -rf "$SHOTS"
+
 # 闸门自己写过的测试数据要清干净，不能留下一个假的"已配置"状态
 "$BIN" --selftest setkey "" >/dev/null 2>&1
 security delete-generic-password -s "com.localtranslate.apikey" -a "default" >/dev/null 2>&1 || true

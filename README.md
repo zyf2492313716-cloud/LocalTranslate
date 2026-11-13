@@ -2,7 +2,16 @@
 
 macOS 上的划词翻译工具。选中文字，按一下快捷键，光标旁边就出译文；也可以截图翻译、输入翻译、查词典。
 
-纯 Swift + AppKit 写的，没有 Electron，没有第三方依赖。整个 App 就是编译出来的一个 `.app`，装完即用。
+纯 Swift + AppKit 写的，没有 Electron，没有第三方依赖，装完就是一个 `.app`。
+
+![主界面](docs/screenshots/card.png)
+
+<p>
+<img src="https://img.shields.io/badge/platform-macOS%2013%2B-blue" alt="platform">
+<img src="https://img.shields.io/badge/Swift-6-orange" alt="swift">
+<img src="https://img.shields.io/badge/license-MIT-green" alt="license">
+<img src="https://img.shields.io/github/stars/zyf2492313716-cloud/LocalTranslate?style=flat" alt="stars">
+</p>
 
 界面和交互是照着 [Bob](https://bobtranslate.com) 做的——因为 Bob 好用，但它只有 macOS，我想把同类功能用原生重写一遍，顺便把免费引擎这条线做扎实。翻译服务的接入方式参考了 [nextai-translator](https://github.com/nextai-translator/nextai-translator)。
 
@@ -27,7 +36,7 @@ macOS 上的划词翻译工具。选中文字，按一下快捷键，光标旁�
 **词典**
 
 - 选中的是单词或词组时，浮窗底部多一块词典区
-- 四个离线/免密钥来源依次兜底：ECDict → 系统词典 → MOJi（日语）→ 有道词典 → 剑桥词典
+- 多个离线/免密钥来源依次兜底：ECDict → 系统词典 → MOJi（日语）→ 有道词典 → 剑桥词典
 - 音标、词性、释义、例句、词形变化
 
 **其它**
@@ -37,6 +46,32 @@ macOS 上的划词翻译工具。选中文字，按一下快捷键，光标旁�
 - 插件：兼容 Bob 的 `.bobplugin`，双击安装，装完可以一键加成翻译服务
 - 浏览器助手：本地起一个 127.0.0.1 的小服务 + 一个 Chromium 扩展，网页里选中文字点「译」就地显示译文
 - PopClip 扩展、URL Scheme、AppleScript 调用
+
+## 界面
+
+**翻译浮窗**：原文卡片、语言栏、每家引擎一张卡片，下面是并排的词典区。
+
+![翻译浮窗](docs/screenshots/card.png)
+
+**OCR 工作台**：左边是截取的图片，右边是识别结果，可以直接编辑、复制或送去翻译。
+
+![OCR 工作台](docs/screenshots/ocr.png)
+
+**历史记录**：左边列表，右边详情，可以重翻、收藏、删除。
+
+![历史记录](docs/screenshots/history.png)
+
+**收藏夹**：搜索、复制、导出 Anki/CSV/JSON。
+
+![收藏夹](docs/screenshots/favorites.png)
+
+**设置 · 插件列表**：Bob 的 `.bobplugin` 双击安装，装完可以直接加成翻译服务。
+
+![插件列表](docs/screenshots/settings-plugins.png)
+
+**设置 · OCR**：识别引擎和识别行为。
+
+![OCR 设置](docs/screenshots/settings-ocr.png)
 
 ## 免密钥就能用的引擎
 
@@ -101,12 +136,19 @@ open -a /Applications/LocalTranslate.app
 - 浏览器助手的服务只监听 `127.0.0.1`
 - 插件运行在 JavaScriptCore 沙盒里，`$file` 读写限制在插件自己的目录
 
-## 已知限制
+## 代码结构
 
-- 谷歌和 MyMemory 的免费接口按 IP 限流，打多了会返回 429。程序会自动冷却 10 分钟，期间由其它引擎顶上
-- Apple 翻译需要系统里装好语言包。英文↔中文通常有，其它语向缺包时会自动跳过这一家
-- 浏览器助手目前只支持 Chromium 系（Chrome / Edge / Brave）。Safari 扩展需要 Xcode 打包签名，没做
-- 原图翻译（把译文画回截图）只做了基础版本，复杂排版会错位
+```
+Sources/LocalTranslate/
+├── AppDelegate.swift          # 菜单栏、全局快捷键、各入口的调度
+├── TranslationCard.swift      # 翻译浮窗（Bob 风格卡片布局）
+├── ScreenOCR.swift            # 截图选区、Vision 识别、分段
+├── *Translators.swift         # 各家免密钥引擎（Apple/必应/有道/彩云/火山…）
+├── DictionaryService.swift    # 词典查询链路
+├── PluginRuntime.swift        # Bob 插件运行时（JSContext + $http/$data/$file…）
+├── HelperServer.swift         # 浏览器助手的本地 HTTP 服务
+└── SelfTest.swift             # 81 项自检
+```
 
 ## 开发
 
@@ -115,6 +157,19 @@ open -a /Applications/LocalTranslate.app
 ```
 
 自检覆盖单元测试、真实网络请求、OCR、插件运行时、界面渲染、真实按键等。失败的项会打印原因，不是"看起来过了"。
+
+截图可以重新生成（离屏渲染，不依赖真实数据）：
+
+```bash
+./build/LocalTranslate.app/Contents/MacOS/LocalTranslate --selftest screenshots docs/screenshots
+```
+
+## 已知限制
+
+- 谷歌和 MyMemory 的免费接口按 IP 限流，打多了会返回 429。程序会自动冷却 10 分钟，期间由其它引擎顶上
+- Apple 翻译需要系统里装好语言包。英文↔中文通常有，其它语向缺包时会自动跳过这一家
+- 浏览器助手目前只支持 Chromium 系（Chrome / Edge / Brave）。Safari 扩展需要 Xcode 打包签名，没做
+- 原图翻译（把译文画回截图）只做了基础版本，复杂排版会错位
 
 ## 参考与致谢
 

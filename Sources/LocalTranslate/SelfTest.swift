@@ -113,6 +113,7 @@ enum SelfTest {
         case "real-services": return realServicesTest(rest)
         case "card-shot": return cardShotTest(rest)
         case "history-shot": return historyShotTest(rest)
+        case "screenshots": return screenshotsTest(rest)
         case "input-e2e": return inputE2ETest(rest)
         case "key-e2e": return keyE2ETest(rest)
         case "shot-test": return shotTest(rest)
@@ -1888,6 +1889,203 @@ enum SelfTest {
     /// 用法: --selftest card-shot [输出路径]
     /// 把历史窗渲染成 PNG，用来核对版式（对齐 Bob 的左列表右详情）。
     /// 用法: --selftest history-shot [输出路径]
+    /// 生成 README 用的截图。全部离屏渲染，历史/收藏写在临时目录，不会把真实数据截进去。
+    /// 用法: --selftest screenshots <输出目录>
+    private static func screenshotsTest(_ arguments: [String]) -> Int32 {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+
+        class Delegate: NSObject, NSApplicationDelegate {
+            var onStart: (() -> Void)?
+            func applicationDidFinishLaunching(_ n: Notification) { onStart?() }
+        }
+        let delegate = Delegate()
+        app.delegate = delegate
+
+        let outDir = URL(fileURLWithPath: arguments.first ?? "/tmp/lt-shots")
+        try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
+
+        func capture(_ window: NSWindow, _ name: String) -> Bool {
+            window.layoutIfNeeded()
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.displayIfNeeded()
+            guard let view = window.contentView,
+                  let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return false }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            guard let png = rep.representation(using: .png, properties: [:]) else { return false }
+            try? png.write(to: outDir.appendingPathComponent(name))
+            print("· \(name)  \(Int(view.bounds.width))x\(Int(view.bounds.height))")
+            return true
+        }
+
+        delegate.onStart = {
+            // 隔离数据：历史和收藏都写临时目录
+            let tmp = FileManager.default.temporaryDirectory
+                .appendingPathComponent("lt-shots-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+            HistoryStore.directoryOverride = tmp
+            FavoriteStore.directoryOverride = tmp
+            HistoryStore.clear()
+            _ = FavoriteStore.clear()
+
+            let now = Date()
+            let demos: [(String, String, String, Double)] = [
+                ("Palliative care aims to improve the quality of life for patients with serious illnesses.",
+                 "姑息治疗旨在改善重症患者的生活质量。", "Apple 翻译", 0.12),
+                ("The committee will review the proposal before the end of the quarter.",
+                 "委员会将在本季度末之前审议该提案。", "彩云小译", 0.06),
+                ("机器学习模型需要大量高质量的训练数据。",
+                 "Machine learning models require large amounts of high-quality training data.", "有道翻译", 0.14),
+                ("Regulatory approval is expected in the second half of next year.",
+                 "监管批准预计将在明年下半年获得。", "必应翻译", 1.21),
+            ]
+            for (i, demo) in demos.enumerated() {
+                let date = now.addingTimeInterval(-Double(i) * 5400)
+                HistoryStore.append(HistoryEntry(source: demo.0, result: demo.1, mode: "translate",
+                                                 model: demo.2, targetLanguage: "zh-Hans",
+                                                 date: date, seconds: demo.3))
+                _ = FavoriteStore.add(source: demo.0, result: demo.1, model: demo.2,
+                                      targetLanguage: "zh-Hans", sourceLanguage: "en", date: date)
+            }
+
+            var index = 0
+            var next: (() -> Void)!
+            var steps: [() -> Void] = []
+            var failures: [String] = []
+
+            // 1) 翻译卡片：四家引擎并排 + 词典区
+            steps.append {
+                let card = TranslationCard.shared
+                let profiles = makeTestProfiles(["Apple 翻译", "彩云小译", "有道翻译", "必应翻译"])
+                card.present(source: "Palliative care aims to improve the quality of life for patients with serious illnesses.",
+                             mode: .translate, targetLanguage: "zh-Hans", profiles: profiles)
+                let samples = [
+                    "姑息治疗旨在改善重症患者的生活质量。",
+                    "姑息治疗的目标是提高重症患者的生活质量。",
+                    "缓和医疗旨在提升重症患者的生活品质。",
+                    "姑息治疗旨在改善患有严重疾病患者的生活质量。",
+                ]
+                for (i, profile) in profiles.enumerated() {
+                    card.beginStream(model: profile.id)
+                    card.complete(model: profile.id, text: samples[i], seconds: [0.12, 0.06, 0.14, 1.21][i])
+                }
+                card.showDictionary(DictionaryResult(
+                    word: "palliative",
+                    translations: ["adj. 姑息的；缓和症状的", "n. 姑息疗法"],
+                    phonetics: [Phonetic(type: "英", value: "ˈpæliətɪv"),
+                                Phonetic(type: "美", value: "ˈpæliətɪv")],
+                    parts: [WordPart(part: "adj.", means: ["缓和的，减轻痛苦的", "（医疗）姑息治疗的"]),
+                            WordPart(part: "n.", means: ["姑息剂，缓和剂"])],
+                    exchanges: [], collocations: []))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+                    if let window = card.windowForTesting {
+                        if !capture(window, "card.png") { failures.append("卡片截图失败") }
+                    } else { failures.append("卡片窗口没出来") }
+                    card.close()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { next() }
+                }
+            }
+
+            // 2) 历史记录
+            steps.append {
+                HistoryWindow.shared.show()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                    if let window = HistoryWindow.shared.windowForTesting {
+                        if !capture(window, "history.png") { failures.append("历史窗截图失败") }
+                        window.orderOut(nil)
+                    } else { failures.append("历史窗没出来") }
+                    next()
+                }
+            }
+
+            // 3) 收藏夹
+            steps.append {
+                FavoriteWindow.shared.show()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                    if let window = FavoriteWindow.shared.windowForTesting {
+                        if !capture(window, "favorites.png") { failures.append("收藏夹截图失败") }
+                        window.orderOut(nil)
+                    } else { failures.append("收藏夹没出来") }
+                    next()
+                }
+            }
+
+            // 4) 设置：插件列表
+            steps.append {
+                PreferencesWindow.shared.show(section: .plugins)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+                    if let window = NSApp.windows.first(where: { $0.title.contains("设置") }) {
+                        if !capture(window, "settings-plugins.png") { failures.append("插件列表截图失败") }
+                    } else { failures.append("设置窗没出来") }
+                    next()
+                }
+            }
+
+            // 5) 设置：OCR
+            steps.append {
+                PreferencesWindow.shared.show(section: .ocrSettings)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    if let window = NSApp.windows.first(where: { $0.title.contains("设置") }) {
+                        if !capture(window, "settings-ocr.png") { failures.append("OCR 设置截图失败") }
+                    } else { failures.append("设置窗没出来") }
+                    next()
+                }
+            }
+
+            // 6) OCR 结果窗（造一张干净的演示图）
+            steps.append {
+                let width = 760, height = 260
+                let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                                    bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                ctx.setFillColor(NSColor.white.cgColor)
+                ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+                let graphics = NSGraphicsContext(cgContext: ctx, flipped: false)
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = graphics
+                ("Screenshot OCR demo" as NSString).draw(at: NSPoint(x: 40, y: 170),
+                    withAttributes: [.font: NSFont.systemFont(ofSize: 36), .foregroundColor: NSColor.black])
+                ("框选屏幕任意区域，识别结果直接可复制。" as NSString).draw(at: NSPoint(x: 40, y: 90),
+                    withAttributes: [.font: NSFont(name: "PingFang SC", size: 26) ?? NSFont.systemFont(ofSize: 26),
+                                     .foregroundColor: NSColor.black])
+                NSGraphicsContext.restoreGraphicsState()
+                if let image = ctx.makeImage() {
+                    OCRWindow.shared.present(image: image, text: "Screenshot OCR demo\n框选屏幕任意区域，识别结果直接可复制。")
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    if let window = OCRWindow.shared.windowForTesting {
+                        if !capture(window, "ocr.png") { failures.append("OCR 窗口截图失败") }
+                        window.orderOut(nil)
+                    } else { failures.append("OCR 窗口没出来") }
+                    next()
+                }
+            }
+
+            let builtSteps = steps
+            next = {
+                guard index < builtSteps.count else {
+                    HistoryStore.directoryOverride = nil
+                    FavoriteStore.directoryOverride = nil
+                    try? FileManager.default.removeItem(at: tmp)
+                    if failures.isEmpty {
+                        print("已保存到: \(outDir.path)")
+                        print("RESULT: PASS")
+                        exit(0)
+                    }
+                    for failure in failures { print("✗ \(failure)") }
+                    print("RESULT: FAIL")
+                    exit(1)
+                }
+                let step = builtSteps[index]
+                index += 1
+                step()
+            }
+            next()
+        }
+        app.run()
+        return 1
+    }
+
     private static func historyShotTest(_ arguments: [String]) -> Int32 {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)

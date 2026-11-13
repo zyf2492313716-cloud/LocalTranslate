@@ -144,6 +144,16 @@ final class PluginListPane: PrefsPane {
         reload()
     }
 
+    /// 插件 info.json 里的 category 是英文小写，列表里要给人看的中文
+    private func localizedCategory(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "translate": return "翻译"
+        case "ocr": return "文字识别"
+        case "tts": return "语音合成"
+        default: return raw
+        }
+    }
+
     private func reload() {
         rows = PluginRuntime.installed().map { name in
             let dir = PluginRuntime.directory.appendingPathComponent(name)
@@ -152,7 +162,7 @@ final class PluginListPane: PrefsPane {
                let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 return (name,
                         object["name"] as? String ?? name,
-                        object["category"] as? String ?? "translate",
+                        localizedCategory(object["category"] as? String ?? "translate"),
                         object["summary"] as? String ?? "")
             }
             return (name, name, "translate", "单文件 JS 插件")
@@ -260,6 +270,16 @@ final class FavoritesPane: PrefsPane {
         stack.addArrangedSubview(PrefsKit.statusLine(symbol: "star", color: .secondaryLabelColor,
             text: "翻译卡片上按 ⌘S 或点星标即可收藏到这里。"))
         reload()
+    }
+
+    /// 插件 info.json 里的 category 是英文小写，列表里要给人看的中文
+    private func localizedCategory(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "translate": return "翻译"
+        case "ocr": return "文字识别"
+        case "tts": return "语音合成"
+        default: return raw
+        }
     }
 
     private func reload() {

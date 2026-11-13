@@ -6,6 +6,9 @@ final class FavoriteWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     static let shared = FavoriteWindow()
 
     private var window: NSWindow?
+
+    /// 自测/截图用
+    var windowForTesting: NSWindow? { window?.isVisible == true ? window : nil }
     private var table: NSTableView!
     private var countLabel: NSTextField!
     private var entries: [FavoriteEntry] = []

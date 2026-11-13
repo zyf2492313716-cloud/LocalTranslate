@@ -172,7 +172,9 @@ final class OCRWindow: NSObject, NSWindowDelegate {
         imageView.layer?.cornerRadius = 6
         imageView.translatesAutoresizingMaskIntoConstraints = false
 
-        textView = NSTextView()
+        // 必须给一个初始 frame 并打开竖直伸缩：只 new 一个零尺寸的 NSTextView 塞进
+        // scrollView，文字是有内容的但一个像素都不画——用户看到的是右边整片空白。
+        textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 380, height: 320))
         textView.isEditable = true
         textView.isSelectable = true
         textView.allowsUndo = true
@@ -180,7 +182,13 @@ final class OCRWindow: NSObject, NSWindowDelegate {
         textView.font = NSFont.systemFont(ofSize: 13)
         textView.textColor = .labelColor
         textView.textContainerInset = NSSize(width: 8, height: 8)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
         textView.autoresizingMask = [.width]
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 380, height: CGFloat.greatestFiniteMagnitude)
 
         let textScroll = NSScrollView()
         textScroll.documentView = textView
@@ -188,11 +196,20 @@ final class OCRWindow: NSObject, NSWindowDelegate {
         textScroll.borderType = .bezelBorder
         textScroll.translatesAutoresizingMaskIntoConstraints = false
 
+        // 只设 fillEqually 不够：NSImageView 的固有宽度（原图 760pt）会压过
+        // NSScrollView 的 0 固有宽度，结果文字区被挤成 0 宽——用户看到"右边一片空白"。
+        // 显式等宽约束，图片再多也只能占一半。
+        imageView.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        imageView.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        textScroll.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        textScroll.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
         let splitStack = NSStackView(views: [imageView, textScroll])
         splitStack.orientation = .horizontal
-        splitStack.distribution = .fillEqually
+        splitStack.distribution = .fill
         splitStack.spacing = 10
         splitStack.translatesAutoresizingMaskIntoConstraints = false
+        imageView.widthAnchor.constraint(equalTo: textScroll.widthAnchor).isActive = true
 
         // 底部控制栏
         continuousButton = NSButton(title: "连续拼接", target: self, action: #selector(toggleContinuous))
