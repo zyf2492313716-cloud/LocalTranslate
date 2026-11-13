@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+<dictionary title="LocalTranslate Terminology">
+    <suite name="LocalTranslate Suite" code="LTst" description="LocalTranslate script suite">
+        <command name="request" code="LTkqrqst" description="Execute a JSON request">
+            <cocoa class="RequestScriptCommand"/>
+            <direct-parameter type="text" description="JSON request string"/>
+            <result type="text" description="JSON response string"/>
+        </command>
+        <command name="translate" code="LTkqtrns" description="Directly translate the specified text (PopClip / Alfred compatible)">
+            <cocoa class="TranslateScriptCommand"/>
+            <direct-parameter type="text" description="Text to translate"/>
+            <result type="text" description="Status or result"/>
+        </command>
+    </suite>
+</dictionary>
