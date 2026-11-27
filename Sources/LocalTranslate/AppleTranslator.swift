@@ -32,6 +32,11 @@ enum AppleTranslator {
         var errorDescription: String? { message }
     }
 
+    /// 会话没挂上 / 已经失效。这类失败跟「语言方向不支持」无关，重试一次通常就好。
+    struct SessionUnavailable: LocalizedError {
+        var errorDescription: String? { "系统翻译会话未就绪" }
+    }
+
     /// 系统支持多少种语言（探针用过：21 种）
     @available(macOS 15.0, *)
     static func supportedLanguageCount() async -> Int {
@@ -88,44 +93,73 @@ enum AppleTranslator {
         let detectedRaw = LanguageDetector.detectLanguage(trimmed)
         let sourceCode = baseLanguage(detectedRaw)
 
-        // 同语种来回翻没有意义，直接把原文给回去，避免系统翻译原地打转
+        // 同语种来回翻没有意义，直接把原文给回去，避免系统翻译原地打转。
+        // 注意这一步必须排在 availability 之前：系统对 zh -> zh 一律返回
+        // `.unsupported`，先问状态的话这条「原文直接返回」永远走不到，
+        // 中文内容会被当成「系统不支持」而报错。
         if sourceCode == targetCode {
             return text
         }
 
-        // 语言包没下载时**绝对不能**建会话：系统会弹「Download Languages to Translate」
-        // 那个模态框抢走前台，用户以为 App 挂了。直接给一句可操作的话，其它服务照常出结果。
-        let status = await availability(targetLanguage: targetCode, sourceLanguage: sourceCode)
-        if status == .needsDownload {
-            throw BridgeFailure(message: "Apple 翻译缺少「\(Languages.promptName(for: sourceCode)) → \(Languages.promptName(for: targetCode))」语言包：系统设置 → 通用 → 语言与地区 → 翻译语言，点一下下载即可；其它引擎不受影响")
-        }
+        // 语言包状态的预检已经去掉了。两个原因：
+        // 1) `LanguageAvailability.status` 在真实应用进程里误报率很高——实测系统
+        //    `zh -> en` 明明是 installed，同进程里却经常返回 `.supported`，于是每句
+        //    中文都被告知「缺少简中→英语语言包」，而其实一点就翻得出来；
+        // 2) 它真缺包的时候，`session.translate` 自己会抛出语言相关的错误，那时再
+        //    给可操作提示也不迟，还更准确。
+        // 唯一保留的防守是 `.unsupported` 时不提前判死（同语种已经在上面返回原文了）。
 
         var lastError: Error?
         for source in [sourceCode, nil] as [String?] {
-            do {
-                return try await withThrowingTaskGroup(of: String.self) { group in
-                    group.addTask {
-                        try await AppleTranslationBridge.shared.translate(trimmed, source: source, target: targetCode)
+            // 会话没挂上时立刻重来一次（rebuild 会重建 host 面板）。系统翻译冷启动
+            // 第一次常常是这种情况，重试一次基本必过——不重试的话用户看到的就是
+            // 一张红色错误卡，而实际上再点一下就好了。
+            var attemptsLeft = 2
+            while attemptsLeft > 0 {
+                attemptsLeft -= 1
+                do {
+                    return try await withThrowingTaskGroup(of: String.self) { group in
+                        group.addTask {
+                            try await AppleTranslationBridge.shared.translate(trimmed, source: source, target: targetCode)
+                        }
+                        group.addTask {
+                            try await Task.sleep(nanoseconds: 12_000_000_000)
+                            throw BridgeFailure(message: "系统翻译 12 秒没响应，多半是语言包没下载——到「系统设置 → 通用 → 语言与地区 → 翻译语言」里加一下")
+                        }
+                        let first = try await group.next()!
+                        group.cancelAll()
+                        return first
                     }
-                    group.addTask {
-                        try await Task.sleep(nanoseconds: 12_000_000_000)
-                        throw BridgeFailure(message: "系统翻译 12 秒没响应，多半是语言包没下载——到「系统设置 → 通用 → 语言与地区 → 翻译语言」里加一下")
+                } catch let unavailable as SessionUnavailable {
+                    lastError = unavailable
+                    if attemptsLeft > 0 {
+                        // 给 SwiftUI 一点时间把新的 .translationTask 挂上
+                        try? await Task.sleep(nanoseconds: 150_000_000)
+                        continue
                     }
-                    let first = try await group.next()!
-                    group.cancelAll()
-                    return first
+                    break
+                } catch {
+                    lastError = error
+                    // 换一次「让系统自己检测语种」再试；其它错误直接上报
+                    let message = error.localizedDescription.lowercased()
+                    let retryable = message.contains("unsupported") || message.contains("不支持")
+                        || message.contains("language") || message.contains("超时") || message.contains("timed out")
+                    if !retryable { throw error }
+                    break
                 }
-            } catch {
-                lastError = error
-                // 系统明确说「不支持这个语言方向」时，换自动检测再试一次；其它错误直接上报
-                let message = error.localizedDescription.lowercased()
-                let retryable = message.contains("unsupported") || message.contains("不支持")
-                    || message.contains("language") || message.contains("超时") || message.contains("timed out")
-                if !retryable { break }
             }
         }
 
         let raw = lastError?.localizedDescription ?? "未知错误"
+        // 所有重试都失败，而且错误确实指向语言/语言包，这时才给下载指引。
+        // 其它原因（会话、超时、系统内部错误）原样上报，不要一律甩「缺语言包」——
+        // 那是最容易把人带偏的一句提示。
+        let lower = raw.lowercased()
+        let looksLikeLanguagePack = lower.contains("language") || lower.contains("语言")
+            || lower.contains("not supported") || lower.contains("不支持")
+        if looksLikeLanguagePack {
+            throw BridgeFailure(message: "Apple 翻译这会儿没翻出来「\(Languages.promptName(for: sourceCode)) → \(Languages.promptName(for: targetCode))」：如果是第一次用这个方向，到「系统设置 → 通用 → 语言与地区 → 翻译语言」下载一下语言包；其它引擎不受影响")
+        }
         throw BridgeFailure(message: ErrorMessages.explain(raw))
     }
 }
@@ -235,14 +269,26 @@ final class AppleTranslationBridge {
             waitedMs += 10
         }
         guard let cont = model.sessionContinuation else {
-            throw AppleTranslator.BridgeFailure(message: "系统翻译不支持 \(source ?? "自动检测") → \(target) 这个语言方向（系统会话没有建立）")
+            // 会话没建起来的原因常常跟语言方向无关（面板被回收、引擎刚启动还没挂载），
+            // 交给外层重试一次，能自愈的就别让用户看到报错。
+            throw AppleTranslator.SessionUnavailable()
         }
 
         // 单次完成的闸门：无论「超时」还是「系统真回调」，都只 resume 一次。
         // 以前用 withThrowingTaskGroup 做超时，超时那条赢了以后 continuation 就永远悬着，
         // isBusy 再也不释放——整条 Apple 翻译链路被永久卡死（真实机型上必现）。
         let box = CompletionBox<String>()
-        cont.yield((text, { result in box.finish(result) }))
+        let delivered = cont.yield((text, { result in box.finish(result) }))
+
+        // yield 返回 `.terminated` 只有一个原因：`.translationTask` 那个 for-await 循环
+        // 已经结束了（会话被系统回收、host 视图被重建、或者上一次失败后我们主动清了
+        // continuation）。这时候把任务塞进一个没人读的流里，回调永远不会来，只能干等
+        // 12 秒超时，然后给用户看一句「语言包可能没下载」——文案和真实原因完全对不上。
+        // 直接在原地判死，把会话清掉让下一次请求重建，并且说清楚是哪一步断的。
+        guard case .enqueued = delivered else {
+            invalidateSession()
+            throw AppleTranslator.SessionUnavailable()
+        }
 
         let timeoutWork = DispatchWorkItem {
             box.finish(.failure(AppleTranslator.BridgeFailure(message: "系统翻译超时（语言包可能没下载）")))
@@ -267,7 +313,15 @@ final class AppleTranslationBridge {
 
     @MainActor
     private func ensureHost() {
-        guard window == nil else { return }
+        // 面板可能已经被系统回收（或者窗口所在的那块屏没了），但 `window` 引用还留着。
+        // 以前只判 `window == nil`，于是引用还在、视图其实已经没了，SwiftUI 再也不会跑
+        // `.translationTask`，会话永远建不起来——表现为 Apple 那一栏一直报「系统不支持
+        // 这个语言方向」。这里额外检查一下窗口是否还活着，不活就重建。
+        if let window, window.isVisible || window.contentView?.window != nil { return }
+        window?.contentView = nil
+        window?.close()
+        self.window = nil
+
         let hosting = NSHostingView(rootView: BridgeView(model: model))
         hosting.frame = NSRect(x: 0, y: 0, width: 1, height: 1)
         let panel = NSPanel(contentRect: hosting.frame,

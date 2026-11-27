@@ -113,13 +113,23 @@ final class TranslateRunner {
                     card.removeService(model: profile.id)
                     return
                 }
+                // Apple 是离线引擎，语言包真没装时才翻身无术。但「要不要撤卡」不能只看
+                // availability：它对 zh→zh 一律报 unsupported，对刚装好的语言包也常报
+                // needsDownload。以前只要不是 installed 就把整张卡撤掉，于是用户选中文
+                // 内容时 Apple 那栏凭空消失、一个字都不解释。现在只有系统明确说这个方向
+                // 压根不支持、且不是同语种（同语种 translate 会直接回原文）时才撤。
                 if profile.providerKind == .apple, #available(macOS 15.0, *) {
-                    let availability = await AppleTranslator.availability(
-                        targetLanguage: effectiveTarget,
-                        sourceLanguage: LanguageDetector.detectLanguage(source))
-                    if availability != .installed {
-                        card.removeService(model: profile.id)
-                        return
+                    let detected = LanguageDetector.detectLanguage(source)
+                    let sameLanguage = LanguageDetector.baseCode(detected)
+                        == LanguageDetector.baseCode(effectiveTarget)
+                    if !sameLanguage {
+                        let availability = await AppleTranslator.availability(
+                            targetLanguage: effectiveTarget,
+                            sourceLanguage: detected)
+                        if availability == .unsupported {
+                            card.removeService(model: profile.id)
+                            return
+                        }
                     }
                 }
                 await Translator.translate(
@@ -188,12 +198,20 @@ final class TranslateRunner {
             for profile in usable {
                 if ProviderCooldown.isCoolingDown(profile.id) { continue }
                 if profile.providerKind == .apple, #available(macOS 15.0, *) {
-                    let status = await AppleTranslator.availability(
-                        targetLanguage: effectiveTarget,
-                        sourceLanguage: LanguageDetector.detectLanguage(source))
-                    if status != .installed {
-                        lastError = "Apple 翻译缺语言包"
-                        continue
+                    let detected = LanguageDetector.detectLanguage(source)
+                    let sameLanguage = LanguageDetector.baseCode(detected)
+                        == LanguageDetector.baseCode(effectiveTarget)
+                    if !sameLanguage {
+                        let status = await AppleTranslator.availability(
+                            targetLanguage: effectiveTarget,
+                            sourceLanguage: detected)
+                        // 只有系统明确不支持这个方向时才跳过这家，继续用别家。
+                        // needsDownload 也让它试——真缺包时 translate 会抛出可操作的提示，
+                        // 比在这里提前判死强（以前这里一判，整条静默链路就无声失败了）。
+                        if status == .unsupported {
+                            lastError = "Apple 翻译不支持这个语言方向"
+                            continue
+                        }
                     }
                 }
                 if profile.providerKind == .mymemory,

@@ -1162,6 +1162,44 @@ enum SelfTest {
 
                     print(String(format: "✓ 连续三次真翻成功: [%.2fs] %@ | [%.2fs] %@ | [%.2fs] %@", dt1, r1, dt2, r2, dt3, r3))
                     print(String(format: "✓ 交替语向 6 次无卡死: [%.2fs] 总耗时，末次=%@", dSeq, alternated.last ?? ""))
+
+                    // 回归：同语种不该报错。系统对 zh -> zh 一律返回 unsupported，
+                    // 以前 translate 里先问了 availability，于是「同语种直接回原文」
+                    // 这条分支永远走不到，中文内容会被当成「系统不支持」而翻红。
+                    let same = try await AppleTranslator.translate("今天天气不错", targetLanguage: "zh-Hans")
+                    if same != "今天天气不错" {
+                        print("✗ 同语种没有原样返回原文，实际：\(same)")
+                        print("RESULT: FAIL")
+                        exit(1)
+                    }
+                    print("✓ 同语种原样返回原文（不再误报「系统不支持」）")
+
+                    // 回归：中文 → 英文要真的出英文，不能把中文原样吐回来
+                    let zhEn = try await AppleTranslator.translate("今天天气不错，适合出门散步。", targetLanguage: "en")
+                    if zhEn.isEmpty {
+                        print("✗ 中译英返回空")
+                        print("RESULT: FAIL")
+                        exit(1)
+                    }
+                    if zhEn.contains("天气") || zhEn.contains("散步") {
+                        print("✗ 中译英没翻，仍是中文：\(zhEn)")
+                        print("RESULT: FAIL")
+                        exit(1)
+                    }
+                    print("✓ 中文 → 英文真的出英文：\(zhEn)")
+
+                    // 回归：「测试连接」按钮在 Apple 上不能再报「Base URL 不合法」。
+                    // Apple 没有 Base URL、没有 model，以前拿 chat 请求去 ping 必然判死。
+                    let appleProfile = ServiceProfile.Preset.apple.makeProfile()
+                    switch await Translator.validate(profile: appleProfile) {
+                    case .success:
+                        print("✓ Apple 的「测试连接」返回成功（不再报 Base URL 不合法）")
+                    case .failure(let error):
+                        print("✗ Apple 的「测试连接」仍然失败：\(error.localizedDescription)")
+                        print("RESULT: FAIL")
+                        exit(1)
+                    }
+
                     print("RESULT: PASS")
                     exit(0)
                 } catch {

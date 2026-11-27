@@ -673,6 +673,22 @@ enum Translator {
 
     /// 非流式 ping 一下，用于「测试连接」按钮。
     static func validate(profile: ServiceProfile) async -> Result<Void, TranslateError> {
+        // 免密钥的原生引擎不能拿 OpenAI 的 chat 请求去 ping：它们没有 Base URL，
+        // 也没有 model 字段，走到 makeRequest 里必然被判「Base URL 不合法」。
+        // 以前 Apple 那一栏点「测试连接」永远红着，用户以为 Apple 坏了。
+        // 这里的正确做法是直接真翻一句，翻出东西就是好的。
+        if profile.providerKind == .apple {
+            guard #available(macOS 15.0, *) else {
+                return .failure(.notConfigured)
+            }
+            do {
+                let out = try await AppleTranslator.translate("hello", targetLanguage: "zh-Hans")
+                return out.isEmpty ? .failure(.emptyResponse) : .success(())
+            } catch {
+                return .failure(.network(error.localizedDescription))
+            }
+        }
+
         let body: [String: Any] = [
             "model": profile.model,
             "messages": [["role": "user", "content": "ping"]],
